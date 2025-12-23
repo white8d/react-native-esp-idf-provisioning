@@ -654,42 +654,62 @@ class EspIdfProvisioningModule internal constructor(context: ReactApplicationCon
   }
 
   @ReactMethod
-  override fun getVersionInfo(deviceName: String, promise: Promise?) {
-    val espDevice = espDevices[deviceName].guard {
-      promise?.reject(Error("No ESP device found. Call createESPDevice first."))
-      return
+override fun getVersionInfo(deviceName: String, promise: Promise?) {
+  val espDevice = espDevices[deviceName].guard {
+    promise?.reject(Error("No ESP device found. Call createESPDevice first."))
+    return
+  }
+
+  val result = Arguments.createMap()
+  val rawVersion = espDevice.versionInfo
+
+  if (rawVersion == null) {
+    promise?.resolve(result)
+    return
+  }
+
+  // Normalize versionInfo: JSON → ok, String → wrap to JSON
+  val versionJson = try {
+    JSONObject(rawVersion)
+  } catch (e: Exception) {
+    // 🔧 Custom ESP fallback: plain string like "V0.1"
+    JSONObject().apply {
+      put(
+        "prov",
+        JSONObject().apply {
+          put("ver", rawVersion)
+          put("sec_ver", 1) // force SECURITY_1
+          put("cap", JSONArray())
+        }
+      )
     }
+  }
 
-    val result = Arguments.createMap()
+  val provObj = versionJson.optJSONObject("prov")
+  if (provObj != null) {
+    val prov = Arguments.createMap()
 
-    if (espDevice.versionInfo !== null) {
-      try {
-        val protoVersion = JSONObject(espDevice.versionInfo).getJSONObject("prov")
+    prov.putString("ver", provObj.optString("ver"))
+    prov.putInt("sec_ver", provObj.optInt("sec_ver", 1))
 
-        val prov = Arguments.createMap()
-        if (protoVersion.has("sec_ver")) {
-          prov.putInt("sec_ver", protoVersion.optInt("sec_ver"))
-        }
-        if (protoVersion.has("ver")) {
-          prov.putString("ver", protoVersion.optString("ver"))
-        }
-        if (protoVersion.has("cap")) {
-          val capabilities = Arguments.createArray()
-          val cap = protoVersion.getJSONArray("cap")
-          for (i in 0..<cap.length()) {
-            capabilities.pushString(cap.getString(i))
-          }
-          prov.putArray("cap", capabilities)
-        }
-
-        result.putMap("prov", prov)
-      } catch (e: JSONException) {
-        // Ignore error
+    val caps = Arguments.createArray()
+    val capArr = provObj.optJSONArray("cap")
+    if (capArr != null) {
+      for (i in 0 until capArr.length()) {
+        caps.pushString(capArr.getString(i))
       }
     }
+    prov.putArray("cap", caps)
 
-    promise?.resolve(result)
+    result.putMap("prov", prov)
   }
+
+  // Extra debug / backward compatibility
+  result.putString("raw_version", rawVersion)
+  result.putBoolean("custom_provisioning", true)
+
+  promise?.resolve(result)
+}
 
   @ReactMethod
   override fun getDeviceCapabilities(deviceName: String, promise: Promise?) {
